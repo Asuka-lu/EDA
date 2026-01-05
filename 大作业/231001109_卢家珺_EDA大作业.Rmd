@@ -1,0 +1,304 @@
+---
+title: "EDA大作业"
+author: "卢家珺"
+date: "2025-12-23"
+output:
+  officedown::rdocx_document:
+    reference_docx: template.docx
+---
+#数据包导入
+```{r}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(GGally)
+library(dplyr)
+library(visdat)
+library(caret)
+library(cluster)
+```
+#1 melbcv2009数据集
+##1.1 基本结构
+```{r}
+melb <- read.csv("melbcv2009.csv")
+str(melb) 
+#唯一值
+sapply(melb, n_distinct)
+#缺失值
+sapply(melb, function(x) sum(is.na(x)))
+```
+答：数据集有5880条记录，18种变量，其中变量"X"、"Date"、"Year"、"Month"、"Day"、"Hour"、"MDate"、"Weekday_End"为时间编号变量"Town.Hall.West"、"Collins.Place.South"、"Collins.Place.North"、"Bourke.Street.Mall.South"、"Bourke.Street.Mall.North"、"Flagstaff.Station"、"Melbourne.Central"、"State.Library"、"Victoria.Point"、"Birrarung.Marr"为人行道监控的数据，除了变量"Date"是char类型外其他变量为int类型，有缺失值，变量" Melbourne.Central "有432个缺失值频率为432/5880，变量"Birrarung.Marr"有3528个缺失值频率为3528/5880
+
+##1.2 详细研究
+答：变量"Year"可以省略，全为"2009".变量Weekday_End，其有2个唯一取值的，为"10"和"20"，应该一个表示周末一个表示工作日
+
+##1.3 描述统计量和直方图
+```{r}
+#描述统计量
+summary(melb)
+vars <- c("Town.Hall.West","Collins.Place.South","Collins.Place.North",
+          "Bourke.Street.Mall.South","Bourke.Street.Mall.North",
+          "Flagstaff.Station","Melbourne.Central","State.Library",
+          "Victoria.Point","Birrarung.Marr")
+melb %>%
+  select(vars) %>%
+  pivot_longer(everything(), names_to = "Location", values_to = "Count") %>%
+  ggplot(aes(x = Count)) +
+  geom_histogram(bins = 30) +
+  facet_wrap(~Location, scales = "free") +
+  labs(x = "行人数量", y = "频数")
+
+```
+##1.4 散点矩阵
+```{r}
+pdf("melb_scatter.pdf")
+ggpairs(melb %>% select(where(is.numeric)))
+dev.off()
+```
+相关系数
+```{r}
+cor(melb %>% select(where(is.numeric)), use = "complete.obs")
+```
+答：Melbourne.Central 和 Birrarung.Marr正相关，Bourke St Mall和Collins Place正相关，Town Hall 与 Bourke St Mall 正相关。
+##1.5 监控人流量
+```{r}
+melb_long <- melb %>%
+  select(Date, Hour,vars) %>%
+  pivot_longer(
+    cols = -c(Date, Hour),
+    names_to = "Location",
+    values_to = "Count"
+  )
+  summary_15 <- melb_long %>%
+  group_by(Location) %>%
+  summarise(
+    Peak_Hour = Hour[which.max(tapply(Count, Hour, mean, na.rm = TRUE))],
+    Total_Flow = sum(Count, na.rm = TRUE),
+    Max_Flow = max(Count, na.rm = TRUE),
+    Max_Date = Date[which.max(Count)],
+    Max_Hour = Hour[which.max(Count)],
+    .groups = "drop"
+  )
+summary_15
+```
+答：存在一致的高峰8点、13点和17点Bourke.Street.Mall的人流量最大，依据人流量总计，最大值出现在Flagstaff.Station监控点的10/7/2009的8点时段。
+##1.6 缺失值和插补
+```{r}
+melb$Melbourne.Central[is.na(melb$Melbourne.Central)] <-
+  mean(melb$Melbourne.Central, na.rm = TRUE)
+
+melb$Birrarung.Marr[is.na(melb$Birrarung.Marr)] <-
+  mean(melb$Birrarung.Marr, na.rm = TRUE)
+```
+答：根据1.1 变量" Melbourne.Central "和变量"Birrarung.Marr"存在缺失值，因为是监控的关键数据不能忽略，采取平均数插补的方法。
+##1.7 异常值的探索
+```{r}
+melb_long <- melb %>%
+  select(vars) %>%
+  pivot_longer(everything(),
+               names_to = "Location",
+               values_to = "Count")
+
+boxplot(Count ~ Location, data = melb_long)
+```
+答：使用箱线图离群值规则，监控变量存在异常高值，应该是高峰时段。相关的变量详见1.4。
+#1.8 统计模型
+```{r}
+fit <- lm(Melbourne.Central ~ Birrarung.Marr, data = melb)
+summary(fit)
+par(mfrow = c(2, 2))
+plot(fit, which = 1:4)
+```
+答：针对具有明显相关性的变量 Melbourne.Central 和 Birrarung.Marr，建立线性回归模型。模型结果表明 Birrarung.Marr 对 Melbourne.Central 正相关。残差诊断图未显示明显异方差或系统性偏差，模型拟合较为合理。
+
+#2 coronavirus.csv数据集
+##2.1 基础结构
+```{r}
+covid <- read.csv("coronavirus.csv")
+str(covid) 
+```
+答：有973836条记录。
+##2.2 汇总与排序
+```{r}
+#国家个数
+n_distinct(covid$country)
+covid %>%
+  filter(type == "confirmed") %>%
+  group_by(country) %>%
+  summarise(total_confirmed = sum(cases, na.rm = TRUE)) %>%
+  arrange(desc(total_confirmed))
+```
+## 2.3 缺失值探索
+```{r}
+sapply(covid, function(x) sum(is.na(x)))
+```
+答：变量"continent_code"、"province"、"population"缺失值较多，跟人口地区相关影响后续分析。
+##2.4 中国的数据分析
+```{r}
+china <- covid %>% filter(country == "China")
+#确诊病例的前五
+china %>%
+  filter(type == "confirmed") %>%
+  group_by(province) %>%
+  summarise(total = sum(cases, na.rm = TRUE)) %>%
+  arrange(desc(total)) %>%
+  head(5)
+#死亡病例的前五
+china %>%
+  filter(type == "death") %>%
+  group_by(province) %>%
+  summarise(total = sum(cases, na.rm = TRUE)) %>%
+  arrange(desc(total)) %>%
+  head(5)
+```
+答：Hong Kong，Unknown，Hubei，Shanghai的确诊和死亡案例均在前五。
+##2.5 unknown的数据特征
+```{r}
+china_unknown <- china %>% filter(province == "Unknown")
+vis_dat(china_unknown)
+```
+答：可以看出，Unknown 省份在部分变量"lat"、"long"、"population"上存在缺失，说明该部分记录多为早期或未明确归属省份的数据。
+##2.6 Unknown 省份确诊病例时间变化
+```{r}
+china_unknown %>%
+  filter(type == "confirmed") %>%
+  ggplot(aes(x = as.Date(date), y = cases)) +
+  geom_line() +
+  labs(x = "日期", y = "确诊病例数")
+```
+
+#3 music.csv数据集
+##3.1 基本结构
+```{r}
+music <- read.csv("music.csv")
+str(melb) 
+#唯一值
+sapply(melb, n_distinct)
+#缺失值
+sapply(melb, function(x) sum(is.na(x)))
+summary(music)
+```
+
+##3.2 构建分类器
+###3.2.1 选取候选变量
+```{r}
+music <- read.csv("music.csv") %>% mutate(id = 1:n())
+music$type <- factor(music$type)
+#选取缺失率少的
+X <- music %>% select(where(is.numeric))
+na_rate <- colMeans(is.na(X))
+vars_sel <- names(sort(na_rate))[1:9]  
+music_sel <- cbind(type = music$type, X[, vars_sel])
+vars_sel
+```
+###3.2.2 训练样本
+```{r}
+library(caret)
+
+set.seed(123)
+idx <- createDataPartition(music_sel$type, p = 2/3, list = FALSE)
+
+train <- music_sel[idx, ]
+test  <- music_sel[-idx, ]
+
+rownames(train)
+rownames(test)
+```
+###3.2.3 建立最好的分类器
+```{r}
+model <- train(
+  type ~ .,
+  data = train,
+  method = "lda",
+  na.action = na.omit
+)
+pred <- predict(model, test)
+confusionMatrix(pred, test$type)
+```
+###3.2.5 预测五个新音轨
+```{r}
+predict(model, test[1:5, ])
+```
+
+##3.3 聚类分析
+```{r}
+X <- scale(music_sel[, -1])
+set.seed(123)
+km <- kmeans(X, centers = 5)
+hc <- hclust(dist(X), method = "ward.D2")
+hc_cut <- cutree(hc, k = 5)
+```
+
+###3.3.1 在俩之间不同的
+```{r}
+which(km$cluster != hc_cut)
+```
+###3.3.2 k-means 与 Ward 层次聚类在单例簇划分上的差异
+```{r}
+# k-means 中形成单例簇的音轨
+single_track <- which(km$size == 1)
+single_track
+
+# 该音轨在 Ward 聚类中的簇规模
+table(hc_cut[km$cluster == single_track])
+```
+答：在将 type 变量纳入聚类后，k-means 未产生单例簇，因此不存在 k-means 与 Ward 层次聚类在单例簇划分上的差异。
+#4 wage.csv数据集
+##4.1 薪资随经验增长而稳步提升的员工
+```{r}
+wage <- read.csv("wage.csv")
+steady_person <- wage %>%
+  group_by(id) %>%
+  filter(sum(!is.na(exper) & !is.na(lnw)) >= 2) %>%   # 防止 cor 报错
+  summarise(cor_le = cor(exper, lnw, use = "complete.obs")) %>%
+  arrange(desc(cor_le)) %>%
+  slice(1)
+
+steady_person
+```
+##4.2 薪资波动剧烈的员工
+```{r}
+volatile_person <- wage %>%
+  group_by(id) %>%
+  summarise(sd_lnw = sd(lnw, na.rm = TRUE)) %>%
+  arrange(desc(sd_lnw)) %>%
+  slice(1)
+
+volatile_person
+```
+
+##4.3 极差分析
+```{r}
+range_df <- wage %>%
+  group_by(id) %>%
+  summarise(
+    min_lnw = min(lnw, na.rm = TRUE),
+    max_lnw = max(lnw, na.rm = TRUE),
+    range_lnw = max_lnw - min_lnw
+  ) %>%
+  arrange(desc(range_lnw)) %>%
+  slice(1:10)
+wage %>%
+  filter(id %in% range_df$id) %>%
+  ggplot(aes(lnw, color = factor(id))) +
+  geom_density() +
+  labs(color = "ID")
+```
+##4.4 工资与失业率
+```{r}
+cor_df <- wage %>%
+  group_by(id) %>%
+  filter(sum(!is.na(lnw) & !is.na(uerate)) >= 2) %>%
+  summarise(cor_lnw_uerate = cor(lnw, uerate, use = "complete.obs")) %>%
+  arrange(desc(abs(cor_lnw_uerate)))
+#最强个体
+strongest_person <- cor_df %>% slice(1)
+strongest_person
+
+wage %>%
+  filter(id == strongest_person$id) %>%
+  ggplot(aes(exper)) +
+  geom_line(aes(y = lnw, color = "lnw")) +
+  geom_line(aes(y = uerate, color = "uerate")) +
+  labs(color = "Variable")
+```
+
