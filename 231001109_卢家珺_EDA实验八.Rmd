@@ -1,0 +1,159 @@
+---
+title: "EDA2025 实验八"
+author: "卢家珺"
+date: "2025-12-03"
+output:
+  officedown::rdocx_document:
+    reference_docx: template.docx
+---
+#1.	意大利橄榄油数据分类:
+```{r}
+library(tidyverse)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(e1071)
+library(nnet)
+library(GGally)
+library(cluster)
+library(factoextra)
+library(reshape2)
+library(ggplot2)
+```
+
+##1.1 导入处理数据
+```{r}
+olive <- read.csv("olive.csv")
+olive_north <- olive %>% filter(region == 1)  # 北部：North-Apulia, Calabria, South-Apulia
+
+set.seed(123)
+train_idx <- sample(1:nrow(olive_north), 2/3 * nrow(olive_north))
+train_data <- olive_north[train_idx, ]
+test_data <- olive_north[-train_idx, ]
+```
+##1.2 分类树模型的建立
+```{r}
+tree_model <- rpart(area ~ ., data = train_data[, -1], method = "class")
+rpart.plot(tree_model)
+pred_train <- predict(tree_model, type = "class")
+pred_test <- predict(tree_model, newdata = test_data, type = "class")
+acc_train <- mean(pred_train == train_data$area)
+acc_test <- mean(pred_test == test_data$area)
+
+library(ggplot2)
+imp <- sort(tree_model$variable.importance, decreasing = TRUE)
+ggplot(data.frame(Var = names(imp), Imp = imp)) +
+  geom_col(aes(reorder(Var, Imp), Imp), fill = "steelblue") +
+  coord_flip() + labs(title = "分类树变量重要性（北部 3 产区）")
+```
+答：其中oleic,inoleic,palmitoleic等变量很重要。
+##1.3 构建随机森林
+```{r}
+rf  <- randomForest(area ~ ., train_data[,-1], importance = TRUE)
+importance(rf)
+top <- tail(rownames(importance(rf)), 6)                # 最重要 6 变量
+ggparcoord(mutate(train_data, area=factor(area)) %>%
+             select(area, all_of(top)),
+           columns=2:7, groupColumn="area",
+           scale="globalminmax", alphaLines=.7) +
+  theme_minimal() +
+  ggtitle("Top 6 Variables by RF Importance")
+```
+##1.4 向量机模型和前馈神经网络模型
+```{r}
+svm_model <- svm(area ~ ., data = train_data[, -1], kernel = "radial") 
+nnet_model <- nnet(area ~ ., data = train_data[, -1], size = 5, trace = FALSE)
+pred_svm <- predict(svm_model, test_data[, -1])
+pred_nnet <- predict(nnet_model, test_data[, -1])
+pred_rf   <- predict(rf,   test_data[, -1])
+
+plot_long <- data.frame(
+  id = 1:nrow(test_data),
+  True = test_data$area,
+  SVM = pred_svm,
+  NNet = pred_nnet,
+  RF = pred_rf
+) %>% pivot_longer(cols = c("SVM","NNet","RF"),
+                   names_to = "Model", values_to = "Pred")
+
+ggplot(plot_long, aes(id, Pred, color = Model)) +
+  geom_point(size = 2) +
+  geom_point(aes(y = True), color = "black", size = 3, alpha = 0.5) +
+  labs(title = "SVM / NNet / RF 对北部三产区橄榄油分类预测对比",
+       x = "样本编号", y = "预测类别") +
+  theme_minimal()
+```
+
+#2 Flea Beetles数据
+##2.1 平均连接法聚类
+```{r}
+flea <- read_csv("flea.csv") %>% select(-species)
+d  <- dist(flea)
+hc <- hclust(d, method = "average")
+flea$id <- cutree(hc, k = 3)
+flea$species <- read_csv("flea.csv") %>% pull(species)
+
+# 聚类 id vs 真实 species 抖动散点图
+ggplot(flea,aes(x = factor(id), y = species, color = factor(id))) +
+  geom_jitter(width = 0.2, height = 0.1, size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("#1f77b4", "#ff7f0e", "#2ca02c")) +
+  labs(title = "Cluster ID vs True Species (k=3)",
+       x = "Cluster ID", y = "True Species", color = "Cluster ID") +
+  theme_minimal(base_size = 14)
+```
+答：总体吻合度较好，约 90 % 样本被正确分到对应物种。
+
+##2.2 分成四类
+```{r}
+flea$id4 <- cutree(hc, k = 4)                 # 新分类变量
+
+ggplot(flea,
+       aes(x = factor(id4), y = species, color = factor(id4))) +
+  geom_point(size = 3, alpha = 0.9) +
+  scale_color_manual(values = c("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728")) +
+  labs(title = "Cluster ID vs True Species (k=4)",
+       x = "Cluster ID", y = "True Species", color = "Cluster ID") +
+  theme_minimal(base_size = 14)
+```
+
+#3 ratsm.csv大鼠基因表达数据集
+##3.1 表达模式
+```{r}
+rat  <- read_csv("ratsm.csv")
+expr <- rat %>% select(E11:E18, P0, P7, P14, A)
+class_mean <- expr %>% mutate(Class1 = rat$Class1) %>%
+  pivot_longer(-Class1, names_to = "T", values_to = "E") %>%
+  group_by(Class1, T) %>% summarise(E = mean(E), .groups = "drop")
+ggplot(class_mean, aes(T, E, colour = factor(Class1), group = Class1)) +
+  geom_line() + geom_point() + theme_minimal()
+
+```
+答：1 类（结构/早期蛋白）：E11 高，随后快速下降，成年最低。
+2 类（分化酶）：E15-E21 达到峰值，成年下降。
+3 类（神经营养因子）：出生前后(P0-P7) 最高，随后回落。
+4 类（增殖/代谢）：成年期(A) 表达最高，呈“晚升”趋势。
+##3.2 聚类分析比较
+```{r}
+set.seed(123)
+k_clust <- kmeans(expr, centers = 4, nstart = 25) 
+table(Cluster = k_clust$cluster, Class1 = rat$Class1)
+```
+答：Class 2 几乎被拆散，30 个样本错分到 Cluster 1，Cluster 1 实际是“大杂烩”，聚集了 1、2、3、4 类基因。只有 Class 3 相对集中。k-means聚类结果与原始功能类显著不符，提示基于时序表达距离的划分不能有效反映已有功能注释，需改用监督分类或考虑其他特征变换。
+
+##3.3 精炼分类规则
+```{r}
+rat_complete <- rat %>% drop_na()
+
+expr <- rat_complete %>% select(E11:E18, P0, P7, P14, A)
+k4 <- kmeans(expr, 4, nstart = 25)
+rf <- randomForest(factor(k4$cluster) ~ ., data = expr, importance = TRUE)
+varImp(rf)
+```
+答：P0、P7、P14 三个出生前后时间点对区分表达模式贡献最大，用其即可建立精简、高效的基因功能类预测规则，实际应用时，可在这 3 个时间点检测新基因表达，用上述随机森林模型快速判定其功能类别，无需测全 9 个时间点。
+#4 clusters-unknown.csv数据集
+```{r}
+df <- read_csv("clusters-unknown.csv")
+wss <- map_dbl(1:10, ~kmeans(df, .x, nstart = 25)$tot.withinss)
+plot(1:10, wss, type = "b", pch = 19)
+```
+答：K=4是明显拐点，该数据集有4个数据集群。

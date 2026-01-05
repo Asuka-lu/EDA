@@ -1,0 +1,150 @@
+---
+title: "231001109 卢家珺 EDA实验六"
+author: "卢家珺"
+date: "2025-11-19"
+output:
+  officedown::rdocx_document:
+    reference_docx: template.docx
+---
+
+#导入数据包
+```{r}
+library(rcompanion)  
+library(GGally)      
+library(naniar)      
+library(car)         
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+```
+#1 正态分布的检验
+
+##导入数据
+```{r}
+pbc <- read.csv("D:/231001109/data/PBC.csv") %>% 
+  select(chol, copper, trig, platelet)
+```
+
+##(1) plotNormalHistogram函数的检验
+```{r}
+vars <- c("chol","copper","trig","platelet")
+par(mfrow=c(2,2))
+for(v in vars) plotNormalHistogram(pbc[[v]], main=v, col="skyblue")
+par(mfrow=c(1,1))
+```
+
+##(2) blom函数正态转换，生成新变量
+```{r}
+pbc <- pbc %>% mutate(
+        cholNST     = blom(chol),
+        copperNST   = blom(copper),
+        trigNST     = blom(trig),
+        plateletNST = blom(platelet))
+```
+
+##(3) 散点矩阵图
+```{r}
+ggpairs(pbc, columns = paste0(vars, "NST"),
+        lower = list(continuous = "points"),
+        diag = list(continuous = "densityDiag"),
+        upper = list(continuous = "cor"))
+```
+
+##(4) 绘制QQ图
+```{r}
+qq_pl <- function(x,title){
+  d <- tibble(y=x) %>% drop_na()
+  ggplot(d, aes(sample=y)) +
+    stat_qq(distribution=qnorm, color="steelblue") +
+    stat_qq_line(distribution=qnorm, color="red", size=1) +
+    labs(title=title,x="Theoretical quantiles",y="Sample quantiles")
+}
+qq_pl(pbc$chol,    "QQ: chol (original)")
+qq_pl(pbc$cholNST, "QQ: cholNST (Blom)")
+```
+#2 pbc文件的创建
+```{r}
+pdf("PBC.pdf", width=10, height=8)
+
+print(gg_miss_var(pbc))
+print(gg_miss_case(pbc))
+print(vis_miss(pbc))
+
+print(ggplot(pbc, aes(chol, trig)) + geom_miss_point())
+dev.off()
+```
+#3 渐进正态模拟
+
+##(1) 绘制正态QQ图
+```{r}
+set.seed(79)
+gammaList <- lapply(1:100, function(i) rgamma(200, shape=3))
+gammaMeans <- unlist(lapply(gammaList, mean))
+car::qqPlot(gammaMeans, distribution="norm",
+            main="渐近正态：Gamma(3)样本均值n=200")
+```
+答：满足渐近正态性假设
+
+##(2) 生成模拟数据BinomSamples
+```{r}
+BinomSamples <- replicate(100, rbinom(200, 10, 0.5))
+BinomMeans   <- apply(BinomSamples, 2, mean)
+car::qqPlot(BinomMeans, distribution="norm",
+            main="渐近正态：Binom(10,0.5)样本均值n=200")
+```
+答：满足渐近正态性假设
+
+##(3)使用指数分布
+```{r}
+ExpSamples <- replicate(100, rexp(200, rate=1))
+ExpMeans   <- apply(ExpSamples, 2, mean)
+car::qqPlot(ExpMeans, distribution="norm",
+            main="渐近正态：Exp(1)样本均值n=200")
+```
+答：满足渐近正态性假设
+
+##(4) 使用柯西分布
+```{r}
+CauchySamples <- replicate(100, rt(200, df=1))
+CauchyMeans   <- apply(CauchySamples, 2, mean)
+car::qqPlot(CauchyMeans, distribution="norm",
+            main="柯西样本均值（无期望）")
+```
+答：不满足渐近正态性假设
+
+##(5) 使用柯西中位数
+```{r}
+CauchyMedians <- apply(CauchySamples, 2, median)
+car::qqPlot(CauchyMedians, distribution="norm",
+            main="柯西样本中位数（渐近正态）")
+```
+答：满足渐近正态性假设
+
+#4 标准正态分布和置信区间
+
+##(1)t分布的临界值
+```{r}
+n <- 100
+set.seed(79)
+sampledata <- rnorm(n)          # 真实总体 N(0,1)
+xbar <- mean(sampledata)
+s    <- sd(sampledata)
+se   <- s / sqrt(n)
+
+t_crit <- qt(0.975, df=n-1)
+CILower <- xbar - t_crit*se
+CIUpper <- xbar + t_crit*se
+data.frame(
+  Method = "手工(t临界)",
+  Mean   = xbar,
+  SD     = s,
+  SE     = se,
+  CI_lower = CILower,
+  CI_upper = CIUpper
+)
+```
+
+##(2)直接使用检验函数
+```{r}
+t.test(sampledata, conf.level=0.95)
+```
